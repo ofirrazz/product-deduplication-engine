@@ -1,28 +1,192 @@
-"""Text normalization for product names (rule-based; extendable)."""
+﻿"""Generic text normalization and attribute extraction for product matching."""
 
 from __future__ import annotations
 
 import re
 import unicodedata
 
-# Hebrew → English glosses for common mobile brand/model words.
-# Extend this dict as you onboard more categories or locales.
-_HEBREW_TO_ENGLISH: dict[str, str] = {
+from models import VariantAttributes
+
+# Small Hebrew → English gloss for commerce (units, colors, editions, frequent Latin-script gaps).
+# Not the primary matching strategy: identifiers + attributes + fuzzy similarity carry most weight.
+_HEBREW_COMMERCE_GLOSSARY: dict[str, str] = {
     "סמסונג": "samsung",
     "גלקסי": "galaxy",
     "אייפון": "iphone",
     "פרו": "pro",
     "מקס": "max",
-    "אולטרה": "ultra",
     "פלוס": "plus",
+    "אולטרה": "ultra",
+    "ג'יגה": "gb",
+    "ג׳יגה": "gb",
+    "גיגה": "gb",
+    "טרה": "tb",
+    "טרבייט": "tb",
+    "אינץ": "inch",
+    "טלוויזיה": "tv",
+    "מחשב": "laptop",
+    "שחור": "black",
+    "לבן": "white",
+    "כחול": "blue",
+    "אדום": "red",
+    "ירוק": "green",
+    "סגול": "purple",
+    "זהב": "gold",
+    "כסף": "silver",
+    "אפור": "gray",
 }
 
+_EDITION_ORDER: tuple[str, ...] = ("pro", "max", "plus", "ultra")
+
 _MULTI_SPACE = re.compile(r"\s+")
-_NON_ALNUM_SPACE = re.compile(r"[^\w\s\-]", re.UNICODE)
+# Keep word chars, dots (decimals), hyphens (SKU-like tokens); turn other punctuation to spaces.
+_NON_ALNUM_SPACE = re.compile(r"[^\w\s\.\-]", re.UNICODE)
+
+_STORAGE_GB_RE = re.compile(r"\b(\d+)\s*gb\b", re.IGNORECASE)
+_STORAGE_TB_RE = re.compile(r"\b(\d+)\s*tb\b", re.IGNORECASE)
+_STORAGE_TOKEN_RE = re.compile(r"\b\d+gb\b|\b\d+tb\b", re.IGNORECASE)
+
+_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|21\d{2})\b")
+
+_SIZE_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,2})?)inch\b", re.IGNORECASE)
+_SIZE_TOKEN_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,2})?inch\b", re.IGNORECASE)
+
+_EDITION_TOKEN_RE = re.compile(r"\b(?:pro|max|plus|ultra)\b", re.IGNORECASE)
+
+_COLOR_TERMS: tuple[str, ...] = (
+    "space gray",
+    "space grey",
+    "rose gold",
+    "midnight blue",
+    "product red",
+    "phantom black",
+    "titanium black",
+    "titanium white",
+    "titanium natural",
+    "graphite",
+    "starlight",
+    "midnight",
+    "lavender",
+    "sierra blue",
+    "deep purple",
+    "obsidian",
+    "porcelain",
+    "bay",
+    "coral",
+    "black",
+    "white",
+    "silver",
+    "gold",
+    "blue",
+    "red",
+    "green",
+    "purple",
+    "orange",
+    "yellow",
+    "pink",
+    "brown",
+    "gray",
+    "grey",
+    "bronze",
+    "titanium",
+)
 
 
-def _collapse_samsung_s_line(s: str) -> str:
-    """Fold common Samsung + Galaxy + S-model permutations to 'samsung sNN'."""
+def _color_term_pattern(term: str) -> str:
+    parts = term.split()
+    return r"\b" + r"\s+".join(re.escape(p) for p in parts) + r"\b"
+
+
+_COLOR_PATTERN = re.compile(
+    "(" + "|".join(_color_term_pattern(t) for t in sorted(_COLOR_TERMS, key=len, reverse=True)) + ")",
+    re.IGNORECASE,
+)
+
+
+def unicode_normalize(text: str) -> str:
+    return unicodedata.normalize("NFKC", text)
+
+
+def lowercase(text: str) -> str:
+    return text.lower()
+
+
+def collapse_whitespace(text: str) -> str:
+    return _MULTI_SPACE.sub(" ", text).strip()
+
+
+def strip_punctuation_to_spaces(text: str) -> str:
+    return _NON_ALNUM_SPACE.sub(" ", text)
+
+
+def normalize_quotes_and_inch_marks(text: str) -> str:
+    """Map double-quote inch marks to a spoken inch token (avoid treating ' as inches)."""
+    s = text.replace("\u201c", '"').replace("\u201d", '"')
+    s = s.replace('"', " inch ")
+    return s
+
+
+def compact_number_unit_patterns(text: str) -> str:
+    """
+    Normalize human spacing between numbers and units into single tokens.
+
+    Examples after full pipeline intent:
+    - 256 gb / 256 GB -> 256gb
+    - 1 tb -> 1tb
+    - 55 inch -> 55inch (after quote normalization)
+    - 15.6 inch -> 15.6inch
+    """
+    s = text
+    s = re.sub(r"\b(\d+(?:\.\d+)?)\s+gb\b", r"\1gb", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(\d+(?:\.\d+)?)\s+tb\b", r"\1tb", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(\d+(?:\.\d+)?)\s+inch\b", r"\1inch", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(\d+(?:\.\d+)?)\s+in\b", r"\1inch", s, flags=re.IGNORECASE)
+    return s
+
+
+def split_glued_edition_suffixes(text: str) -> str:
+    """Generic: 15pro / 13max -> split trailing edition tokens from digits."""
+    return re.sub(r"(\d)(pro|max|plus|ultra)\b", r"\1 \2", text, flags=re.IGNORECASE)
+
+
+def apply_hebrew_commerce_glossary(text: str) -> str:
+    s = text
+    for he, en in _HEBREW_COMMERCE_GLOSSARY.items():
+        s = s.replace(he, en)
+    return s
+
+
+# Tiny typo normalizations (keep small; prefer supplier data fixes in production).
+_COMMON_TOKEN_FIXES: tuple[tuple[str, str], ...] = (
+    ("whirpool", "whirlpool"),
+)
+
+
+def apply_common_token_fixes(text: str) -> str:
+    s = text
+    for bad, good in _COMMON_TOKEN_FIXES:
+        s = re.sub(rf"\b{re.escape(bad)}\b", good, s)
+    s = re.sub(r"\bstainless\s+steel\b", "stainless", s)
+    return s
+
+
+def normalize_inverted_nn_s_suffix(text: str) -> str:
+    """
+    Map inverted ``NNs`` tokens to ``sNN`` (two-digit generation + literal ``s``).
+
+    Covers common retailer typos like ``23s samsung`` without a per-SKU dictionary.
+    Restricted to ``[12]\\d`` to avoid arbitrary ``99s`` matches outside typical S-line ranges.
+    """
+    return re.sub(r"\b([12]\d)s\b", r"s\1", text, flags=re.IGNORECASE)
+
+
+def normalize_samsung_galaxy_s_series(text: str) -> str:
+    """
+    Fold a few permutations of Samsung + Galaxy + ``s<number>`` into ``samsung s<number>``.
+
+    Minimal, regex-only; does not enumerate models. No effect if ``samsung``/``galaxy``/``s\\d`` pattern is absent.
+    """
+    s = text
     s = re.sub(r"\bsamsung\s+galaxy\s+(s\d+)\b", r"samsung \1", s)
     s = re.sub(r"\b(s\d+)\s+samsung\s+galaxy\b", r"samsung \1", s)
     s = re.sub(r"\bgalaxy\s+(s\d+)\s+samsung\b", r"samsung \1", s)
@@ -32,25 +196,84 @@ def _collapse_samsung_s_line(s: str) -> str:
 
 def normalize_text(name: str) -> str:
     """
-    Apply rule-based normalization: case, spacing, Hebrew glosses, light punctuation cleanup.
+    Compose generic, reusable normalization steps (deterministic).
 
-    Future: plug in ML transliteration, brand dictionaries from a CMS, or NER-based cleanup.
+    Order matters: quotes/inches expand, units compact, Hebrew gloss before structural SKU patterns, then punctuation.
     """
     if not name:
         return ""
 
-    s = unicodedata.normalize("NFKC", name)
-    s = s.strip().lower()
+    s = unicode_normalize(name)
+    s = lowercase(s)
+    s = collapse_whitespace(s)
+    s = normalize_quotes_and_inch_marks(s)
+    s = collapse_whitespace(s)
+    s = compact_number_unit_patterns(s)
+    s = split_glued_edition_suffixes(s)
+    s = apply_hebrew_commerce_glossary(s)
+    s = normalize_inverted_nn_s_suffix(s)
+    s = normalize_samsung_galaxy_s_series(s)
+    s = apply_common_token_fixes(s)
+    s = strip_punctuation_to_spaces(s)
+    s = collapse_whitespace(s)
+    return s
 
-    for he, en in _HEBREW_TO_ENGLISH.items():
-        s = s.replace(he.lower(), en)
 
-    s = _collapse_samsung_s_line(s)
+def extract_storage(normalized: str) -> str | None:
+    match_gb = _STORAGE_GB_RE.search(normalized)
+    if match_gb:
+        return f"{match_gb.group(1)}gb"
+    match_tb = _STORAGE_TB_RE.search(normalized)
+    if match_tb:
+        return f"{match_tb.group(1)}tb"
+    return None
 
-    # Strip storage sizes so "iPhone 15 Pro" and "iPhone 15 Pro 256GB" share a key.
-    # Future: keep SKU-level splits when prices differ by storage; use attributes, not name-only.
-    s = re.sub(r"\b\d+\s*gb\b", "", s, flags=re.IGNORECASE)
 
-    s = _NON_ALNUM_SPACE.sub(" ", s)
-    s = _MULTI_SPACE.sub(" ", s)
-    return s.strip()
+def extract_year(normalized: str) -> str | None:
+    match = _YEAR_RE.search(normalized)
+    return match.group(1) if match else None
+
+
+def _format_size_token(raw: str) -> str:
+    value = raw.rstrip("0").rstrip(".") if "." in raw else raw
+    return f"{value}in"
+
+
+def extract_size(normalized: str) -> str | None:
+    match = _SIZE_RE.search(normalized)
+    if not match:
+        return None
+    return _format_size_token(match.group(1))
+
+
+def extract_editions(normalized: str) -> tuple[str, ...]:
+    tokens = set(_EDITION_TOKEN_RE.findall(normalized))
+    return tuple(token for token in _EDITION_ORDER if token in tokens)
+
+
+def extract_color(normalized: str) -> str | None:
+    match = _COLOR_PATTERN.search(normalized)
+    if not match:
+        return None
+    return match.group(1).lower().replace(" ", "_")
+
+
+def extract_variant_attributes(name: str) -> VariantAttributes:
+    normalized = normalize_text(name)
+    return VariantAttributes(
+        storage=extract_storage(normalized),
+        year=extract_year(normalized),
+        size=extract_size(normalized),
+        color=extract_color(normalized),
+        editions=extract_editions(normalized),
+    )
+
+
+def remove_variant_tokens(normalized: str) -> str:
+    family = _STORAGE_TOKEN_RE.sub(" ", normalized)
+    family = _YEAR_RE.sub(" ", family)
+    family = _SIZE_TOKEN_RE.sub(" ", family)
+    family = _EDITION_TOKEN_RE.sub(" ", family)
+    family = _COLOR_PATTERN.sub(" ", family)
+    family = _MULTI_SPACE.sub(" ", family)
+    return family.strip()

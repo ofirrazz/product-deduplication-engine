@@ -18,6 +18,7 @@ def main() -> None:
     print("Unified products (lowest price per group)\n")
     for u in unified:
         print(f"  Display: {u.canonical_name}")
+        print(f"  Tier: {u.match_tier} | Key: {u.dedupe_key}")
         print(f"  Min price: {u.min_price:.2f} {u.currency}")
         print(f"  Merged IDs: {', '.join(u.product_ids)}")
         print(f"  Raw names seen: {u.raw_names}")
