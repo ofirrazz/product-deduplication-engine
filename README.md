@@ -1,5 +1,7 @@
 # Product deduplication (e-commerce)
 
+This project demonstrates a practical, production-oriented approach to product matching in noisy e-commerce environments.
+
 ## Problem
 
 Marketplaces list the same sellable unit under many titles and feeds. The goal is a **generic** matcher that works across categories (phones, TVs, laptops, appliances, etc.), prefers **catalog identifiers** when they are trustworthy, and otherwise uses **deterministic normalization + extracted attributes + a conservative fuzzy layer**. Each unified product shows the **lowest** price in its cluster. **The same pipeline applies across categories such as phones, TVs, laptops, and appliances without changing the core logic.**
