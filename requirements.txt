@@ -1,0 +1,4 @@
+# Python 3.10+ recommended. Standard library only for the skeleton.
+# Add when you extend matching, for example:
+# rapidfuzz>=3.0.0
+# sentence-transformers>=2.2.0
