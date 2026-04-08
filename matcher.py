@@ -1,4 +1,9 @@
-"""Identifier-first grouping keys + conservative text + fuzzy text clustering."""
+"""
+Identifier-first dedupe keys, family fingerprints, and display-friendly representative titles.
+
+Strong IDs and weak SKUs are authoritative; text tier may be refined later by ``fuzzy_match``
+(never changing identifier precedence or variant boundaries).
+"""
 
 from __future__ import annotations
 
@@ -81,6 +86,7 @@ def _family_token_tuple(name: str, brand: Optional[str]) -> tuple[str, ...]:
 
 
 def family_key_from_product(product: Product) -> str:
+    """Stable pipe-joined family token string (sorted, noise-stripped) for strict text keys."""
     return "|".join(_family_token_tuple(product.name, product.brand)) or "unknown"
 
 
@@ -184,6 +190,12 @@ def _storage_display(storage: str) -> str:
 
 
 def representative_name(products: list[Product], variant: VariantAttributes) -> str:
+    """
+    Pick one raw listing as the headline and append missing variant facts in parentheses.
+
+    Deterministic: ``max`` by ``_score_title_quality``; ties break on title length, then first
+    listing in iteration order. ``deduplicator`` passes clusters sorted by ``product.id``.
+    """
     if not products:
         return ""
 

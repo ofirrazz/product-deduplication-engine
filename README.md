@@ -6,9 +6,9 @@ Marketplaces list the same sellable unit under many titles and feeds. The goal i
 
 ## Design Philosophy
 
-- The system is **intentionally conservative**: it assumes catalog and title data are noisy.  
-- It **prefers avoiding false positives over maximizing recall**—merging the wrong offers is worse than showing a few extra rows.  
-- In e-commerce, **incorrect merges are typically more harmful than missing duplicates** (wrong price, wrong SKU, customer complaints), so the defaults err on the side of separation.
+- **Conservative by design:** feeds and seller titles are noisy; the pipeline assumes ambiguity is normal.  
+- **Precision over recall:** we prefer leaving a near-duplicate visible over collapsing two distinct SKUs.  
+- **Operational reality:** in e-commerce, a bad merge tends to cost more than a missed duplicate (pricing errors, fulfillment risk, support load), so defaults favor separation.
 
 ## Matching priority (identifier-first)
 
@@ -46,8 +46,7 @@ Composable steps (in order):
 - **Compact** number+unit: `256 gb`→`256gb`, `1 tb`→`1tb`, `15.6 inch`→`15.6inch`
 - Split glued editions (`15pro`→`15 pro`)
 - **Small Hebrew commerce glossary** (units, colors, editions, a few generic words like `טלוויזיה`→`tv`) — helper only, not the core strategy
-- **Inverted model token** `NNs`→`sNN` via regex (two-digit slice), e.g. `23s samsung`→`s23 samsung`
-- **Minimal Samsung + Galaxy + `s<number>` permutations** folded to `samsung s<number>` (regex only; no per-model dictionary)
+- **Galaxy S-line helpers (guarded):** if the normalized title contains `samsung` or `galaxy`, apply (1) inverted `NNs`→`sNN` for two-digit tokens, e.g. `23s samsung`→`s23 samsung`, and (2) a small set of **regex** folds so permutations like `s23 samsung` align with `samsung s23`—no per-model dictionary. Titles without that context skip these rules to avoid touching unrelated `NNs` tokens.
 - **Tiny typo / phrase fixes** (e.g. `whirpool`→`whirlpool`, `stainless steel`→`stainless`) — keep this list small; fix upstream feeds when possible
 - Punctuation → spaces, whitespace collapse
 
@@ -55,7 +54,7 @@ Composable steps (in order):
 
 ## Why Not a Large Dictionary?
 
-This project does **not** rely on a large, manually curated synonym dictionary as the main matching strategy. Instead, it leans on **structural normalization** (units, punctuation, word order) and **attribute extraction** (storage, size, year, color, editions) to separate variants and build keys. That approach **scales across categories** with less ongoing maintenance than growing an exhaustive term list per vertical.
+The engine does **not** hinge on a large, hand-maintained alias map. Matching is driven mainly by **structural normalization** (units, punctuation, token shape), **attribute extraction** (storage, size, year, color, editions), and **bounded fuzzy similarity** on text-only rows with strict guards. That combination **generalizes across product types** and stays cheaper to own than expanding synonym tables for every category and locale.
 
 ## Attribute extraction
 
@@ -100,16 +99,19 @@ On Windows, `main.py` sets UTF-8 on stdout for Hebrew in the console.
 
 ## Limitations and tradeoffs
 
-The matcher stays **intentionally generic** and does **not** depend on a large alias dictionary. That keeps maintenance low and behavior predictable across categories, but **some noisy retail patterns need small, targeted normalization rules**—for example inverted `NNs` tokens and a compact set of **Samsung + Galaxy + `s\\d` word-order folds** implemented as **regex** in `normalizer.py`, not as a model-by-model lookup. Those rules are **minimal** so we do not overfit the whole stack to one OEM.
+- The design stays **generic and category-agnostic**; it will not capture every vendor-specific naming quirk without extension.  
+- **Noisy retail copy** sometimes needs **small, explicit normalization rules** rather than a giant dictionary.  
+- **Samsung Galaxy S-series** style listings illustrate the pattern: inverted tokens such as `23S Samsung` are corrected with **minimal regex** (scoped behind a `samsung`/`galaxy` check) in `normalizer.py`—not a hardcoded catalog of model IDs.  
+- Those exceptions are **narrow on purpose**: they improve a high-impact product family without turning the matcher into a single-brand special case.
 
-### Optional domain-specific enhancements
+## Optional domain-specific enhancements
 
-In production, teams sometimes add **a few high-impact, well-scoped rules** for families that drive most revenue (still regex- or grammar-based where possible). The goal is to stay **small and testable**: each rule should have clear acceptance tests and be removable if the feed quality improves—avoid turning the engine into an unmaintainable synonym table.
+In a production deployment, it is reasonable to add **occasional, data-backed rules** for families that dominate volume or margin—still preferably **regex or grammar-shaped**, each with tests and owners. The bar should stay high: every addition should prove lift in real data; otherwise the codebase drifts toward an unmaintainable synonym layer.
 
-## Future Improvements
+## Future improvements
 
-- **Embedding-based similarity** for semantic matching when titles diverge but mean the same SKU (with careful calibration to avoid over-merging).  
-- **Integration with a canonical product catalog** (e.g. resolve **MPN → structured attributes**) so titles become hints, not the sole source of truth.  
-- **Category-specific extractors** (e.g. appliances vs wearables) plugged into the same pipeline behind stable interfaces.  
-- **Cross-currency price normalization** for international feeds (FX rates, tax-inclusive vs exclusive, rounding rules).  
-- **Confidence scoring** for each match tier (identifier vs fuzzy vs text) to drive review queues and auto-merge policies.
+- **Embedding-based similarity** for titles that describe the same SKU with different vocabulary (with tight calibration and review hooks).  
+- **Canonical catalog integration** (e.g. **MPN → structured attributes**) so identifiers and attributes anchor the record and titles are secondary.  
+- **Category-specific extractors** behind the same interfaces (appliances, apparel, etc.).  
+- **Cross-currency price normalization** where listings mix markets (FX, tax-included vs excluded, rounding).  
+- **Per-cluster or per-edge confidence scores** to route borderline matches to human review or stricter policies.

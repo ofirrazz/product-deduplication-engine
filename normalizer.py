@@ -170,21 +170,29 @@ def apply_common_token_fixes(text: str) -> str:
     return s
 
 
+def _has_samsung_galaxy_context(text: str) -> bool:
+    """True when the title plausibly refers to Samsung Galaxy copy (brand token or standalone Galaxy line)."""
+    return "samsung" in text or "galaxy" in text
+
+
 def normalize_inverted_nn_s_suffix(text: str) -> str:
     """
-    Map inverted ``NNs`` tokens to ``sNN`` (two-digit generation + literal ``s``).
+    Map ``NNs`` → ``sNN`` for two-digit tokens (e.g. ``23s`` → ``s23``).
 
-    Covers common retailer typos like ``23s samsung`` without a per-SKU dictionary.
-    Restricted to ``[12]\\d`` to avoid arbitrary ``99s`` matches outside typical S-line ranges.
+    **Targeted rule, not a synonym dictionary:** addresses a high-volume retail typo pattern
+    for Galaxy **S**-series style listings. Restricted to ``[12]\\d`` to limit false positives.
+    In production, add similar small regexes only when metrics justify them.
     """
     return re.sub(r"\b([12]\d)s\b", r"s\1", text, flags=re.IGNORECASE)
 
 
 def normalize_samsung_galaxy_s_series(text: str) -> str:
     """
-    Fold a few permutations of Samsung + Galaxy + ``s<number>`` into ``samsung s<number>``.
+    Collapse a few ``samsung`` / ``galaxy`` / ``s<number>`` word orders to ``samsung s<number>``.
 
-    Minimal, regex-only; does not enumerate models. No effect if ``samsung``/``galaxy``/``s\\d`` pattern is absent.
+    Same human intent as “Samsung Galaxy S23” / “Galaxy S23” / “23S Samsung” (internal form is
+    lowercased for matching). **Regex-only, no per-SKU list.** Scoped to this naming pattern so
+    the rest of the pipeline stays category-agnostic.
     """
     s = text
     s = re.sub(r"\bsamsung\s+galaxy\s+(s\d+)\b", r"samsung \1", s)
@@ -194,11 +202,26 @@ def normalize_samsung_galaxy_s_series(text: str) -> str:
     return s
 
 
+def normalize_samsung_s_line_titles(text: str) -> str:
+    """
+    Apply inverted-``NNs`` and Galaxy **S**-line word-order normalization **only** in Samsung/Galaxy context.
+
+    Skips unrelated titles so ``23s`` in other domains is not rewritten. This block is the
+    deliberate “small OEM-shaped exception”: minimal surface area, data-driven if extended.
+    """
+    if not _has_samsung_galaxy_context(text):
+        return text
+    s = normalize_inverted_nn_s_suffix(text)
+    s = normalize_samsung_galaxy_s_series(s)
+    return s
+
+
 def normalize_text(name: str) -> str:
     """
     Compose generic, reusable normalization steps (deterministic).
 
-    Order matters: quotes/inches expand, units compact, Hebrew gloss before structural SKU patterns, then punctuation.
+    Order matters: quotes/inches expand, units compact, Hebrew gloss, then guarded Galaxy S-line regex
+    (only if ``samsung``/``galaxy`` appear), then tiny token fixes, then punctuation stripping.
     """
     if not name:
         return ""
@@ -211,8 +234,7 @@ def normalize_text(name: str) -> str:
     s = compact_number_unit_patterns(s)
     s = split_glued_edition_suffixes(s)
     s = apply_hebrew_commerce_glossary(s)
-    s = normalize_inverted_nn_s_suffix(s)
-    s = normalize_samsung_galaxy_s_series(s)
+    s = normalize_samsung_s_line_titles(s)
     s = apply_common_token_fixes(s)
     s = strip_punctuation_to_spaces(s)
     s = collapse_whitespace(s)

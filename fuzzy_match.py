@@ -1,8 +1,14 @@
 """
 Conservative fuzzy clustering for text-only listings (RapidFuzz).
 
-Only text-tier products enter this path. Pairs are compared only when both family
-labels look meaningful (token count + length guards). Threshold is configurable.
+**Why text tier only:** rows with GTIN/MPN/SKU already have a strict key; fuzzy similarity is
+for noisy titles without a trusted identifier—running it on ID-backed rows would risk
+over-merging unrelated SKUs that share boilerplate.
+
+**Why same variant fingerprint:** fuzzy compares family strings only inside one ``variant.key``
+bucket so storage/color/size/edition mismatches never get a similarity pass.
+
+Meaningful-label guards (token count + length) and ``fuzzy_threshold`` stay configurable.
 """
 
 from __future__ import annotations
@@ -15,7 +21,8 @@ from matcher import build_signature, family_compare_string
 from models import Product
 from normalizer import extract_variant_attributes
 
-# Defaults: tuned so near models like S23 vs S24 (~94.4) stay split at score 95.
+# Default similarity floor (0–100). Tuned so near models like S23 vs S24 (~94.4) stay split at 95.
+# Override per call: ``deduplicate(..., fuzzy_threshold=...)`` or pass into ``assign_text_fuzzy_keys``.
 FUZZY_TOKEN_SORT_MIN_SCORE: float = 95.0
 FUZZY_MIN_FAMILY_TOKENS: int = 2
 FUZZY_MIN_FAMILY_CHAR_NO_SPACE: int = 8
@@ -96,6 +103,7 @@ def assign_text_fuzzy_keys(
     - Meaningful labels cluster with ``token_sort_ratio`` >= ``fuzzy_threshold``.
     - Canonical key token is the most informative label in the cluster (not lexicographic min).
     """
+    # Snapshot text-tier rows only; identifier-backed products keep strict keys unchanged.
     text_products: list[Product] = []
     for p in products:
         sig = build_signature(p)
@@ -106,6 +114,7 @@ def assign_text_fuzzy_keys(
     if not text_products:
         return result
 
+    # Partition by variant fingerprint so fuzzy never crosses storage/color/size/year/edition.
     buckets: dict[str, list[Product]] = defaultdict(list)
     for p in text_products:
         vkey = extract_variant_attributes(p.name).key
